@@ -1,39 +1,59 @@
-use std::io;
 use std::process::Command;
 use tempfile;
 use tempfile::tempdir;
 
-struct CliParams {
-    pub gitlab_url: String,
-    pub github_repository_name: String,
-        
-    pub team_name: Option<String>,
-    pub public: Option<String>,
+use clap::{Parser, ValueEnum};
+
+
+#[derive(Parser)]
+#[command(author, version, about)]
+struct Cli {
+
+    /// Git url to clone - example: gitlab@steplix/frontend/kata-gilded-rose-sebas-dani.git
+    git_url: String,
+    /// Github repository name - example: kata-gilded-rose-sebas-dani
+    /// 
+    /// Beware that the slug is derived from the repository name, unless the github slug override parameter is passed
+    #[arg(verbatim_doc_comment)]
+    github_repo_name: String,
+    
+    /// Github slug override - example: KataGildedRose-SebasDani
+    #[arg(short = 'o', long = "override-github-slug")]
+    github_slug: Option<String>,
+
+    /// Team name to assign once the repository is created - example: steplix/frontend
+    #[arg(short = 'g', long)]
+    team: Option<String>,
+
+    /// Topics to add to the repository
+    /// 
+    /// eg: -t "npm repository",package,query
+    #[arg(short, long, use_value_delimiter=true, value_delimiter=',',value_name= "COMMA_SEPARATED_TOPICS", verbatim_doc_comment)]
+    topics: Option<Vec<String>>,
+    
+    /// Flag for public
+    #[arg(value_enum)]
+    #[arg(default_value_t = Visibility::Private)]
+    #[arg(short = 'p', long)]
+    visibility: Visibility,
+
 }
 
-impl CliParams {
-    fn from_string(input: String) -> Self {
-
-        let inputs : Vec<_> = input.split_ascii_whitespace().collect();
-
-
-        Self {
-            gitlab_url : inputs[0].to_string(),
-            github_repository_name : inputs[1].to_string(),
-            
-            public : inputs.get(4).map(|i| i.to_string()),
-            team_name : inputs.get(3).map(|i| i.to_string()),
-        }
-    }
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub enum Visibility {
+    /// Private github repository
+    Private,
+    /// Public github repository
+    Public,
 }
 
-fn clone_repository(params: &CliParams) -> String {
+fn clone_repository(params: &Cli) -> String {
     
     let temp_repo = tempdir().expect("Could not create tmp directory");
-
+    
     // Clone repository to tmp folder, with all branches -- and with custom tmp name
     let clone = Command::new("git").arg("clone")
-        .arg(&params.gitlab_url)
+        .arg(&params.git_url)
         .arg(temp_repo.path())
         .arg("--mirror")
         .output()
@@ -41,30 +61,24 @@ fn clone_repository(params: &CliParams) -> String {
 
     if !clone.status.success() { eprint!("{}", String::from_utf8(clone.stderr).expect("Could not parse git clone error")); std::process::exit(1); }
 
-    let git_url = format!("git@github.com:{}.git", &params.github_repository_name);
-    let github_url = format!("https://github.com/{}", &params.github_repository_name);
+    let github_slug = params.github_slug.as_ref().unwrap_or(&params.github_repo_name);
+
+    let git_url = format!("git@github.com:{}.git", github_slug);
+    let github_url = format!("https://github.com/{}", github_slug);
 
     // Create the github repository with the parameters specified
     let mut create_repo_command = Command::new("gh");
     create_repo_command
         .arg("repo").arg("create");
     
-    create_repo_command.arg(&params.github_repository_name);
+    create_repo_command.arg(&params.github_repo_name);
     
-    match &params.public {
-        Some(val) => {
-            if val.eq_ignore_ascii_case("public") {
-                create_repo_command.arg("--public");
-            } else {
-                create_repo_command.arg("--private");
-            }
-        }
-        None => {
-            create_repo_command.arg("--private");
-        },
+    match &params.visibility {
+        Visibility::Private => {create_repo_command.arg("--private"); },
+        Visibility::Public => { create_repo_command.arg("--public"); } ,
     }
-
-    match &params.team_name {
+        
+    match &params.team {
         Some(val) => {create_repo_command.args(["--team", &val]);},
         None => {},
     }
@@ -83,23 +97,21 @@ fn clone_repository(params: &CliParams) -> String {
 }
 
 fn main() {
-    println!("Migrating for the following repositories.");
-    println!("Pattern should be\ngitlab_url github_repository_name [team_name]");
+    
+    let args = Cli::parse();
+
+    println!("Migrating {} to GitHub.", &args.git_url);
+    
     
     // Check if auth'ed in github
     let auth = Command::new("git").args(["auth", "status"])
         .status()
-        .expect("Failed to execute gh auth status");
+        .expect("Failed to execute gh auth status -- is gh installed?");
 
     if !auth.success() { eprintln!("You need to log in using gh auth login."); std::process::exit(1); }
 
-    for line_res in io::stdin().lines() {
-        let params = CliParams::from_string(line_res.unwrap());
+    // Call github thingies
+    let url = clone_repository(&args);
 
-        // Call github thingies
-        let url = clone_repository(&params);
-
-        println!("Clone successful for {}: {}", params.github_repository_name, url);
-    }
-
+    println!("Migration successful for {}: {}", args.github_repo_name, url);
 }
