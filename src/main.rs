@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 use tempfile;
 use tempfile::tempdir;
 
@@ -56,14 +56,15 @@ fn clone_repository(params: &Cli) -> String {
     let temp_repo = tempdir().expect("Could not create tmp directory");
     
     // Clone repository to tmp folder, with all branches -- and with custom tmp name
-    let clone = Command::new("git").arg("clone")
+    Command::new("git").arg("clone")
         .arg(&params.git_url)
         .arg(temp_repo.path())
         .arg("--mirror")
+        .stdout(Stdio::inherit())
+        .print_command()
         .output()
-        .expect("Failed to execute git clone");
-
-    if !clone.status.success() { eprint!("{}", String::from_utf8(clone.stderr).expect("Could not parse git clone error")); std::process::exit(1); }
+        .expect("Failed to execute git clone")
+        .print_stderr_if_error();
 
     let github_slug = params.github_slug.as_ref().unwrap_or(&params.github_repo_name);
 
@@ -73,7 +74,8 @@ fn clone_repository(params: &Cli) -> String {
     // Create the github repository with the parameters specified
     let mut create_repo_command = Command::new("gh");
     create_repo_command
-        .arg("repo").arg("create");
+        .arg("repo").arg("create")
+        .stdout(Stdio::inherit());
     
     create_repo_command.arg(&params.github_repo_name);
     
@@ -91,44 +93,72 @@ fn clone_repository(params: &Cli) -> String {
         create_repo_command.args(["--description", description]);    
     }
     
-    let create_repo = create_repo_command.output().expect("Failed to execute gh repo create");
-
-    if !create_repo.status.success() { eprint!("{}", String::from_utf8(create_repo.stderr).expect("Could not parse gh repo create")); std::process::exit(1); }
+    create_repo_command.print_command().output().expect("Failed to execute gh repo create").print_stderr_if_error();
 
     // Edit new repo
     // Add topics
     if let Some(topics) = &params.topics {
         for topic in topics {
-            let edit_repo_add_topic = Command::new("gh").arg("repo").arg("edit")
+            Command::new("gh").arg("repo").arg("edit")
                 .arg(&params.github_repo_name)
                 .args(["--add-topic", topic])
-                .output().expect(format!("Failed to execute gh repo edit --add-topic {}",topic).as_str());
-
-            if !edit_repo_add_topic.status.success() { eprint!("{}", String::from_utf8(edit_repo_add_topic.stderr).expect("Could not parse gh repo edit")); std::process::exit(1); }
+                .stdout(Stdio::inherit())
+                .print_command()
+                .output().expect(format!("Failed to execute gh repo edit --add-topic {}",topic).as_str())
+                .print_stderr_if_error();
         }
     }
 
     // Push to github
 
-    let push = Command::new("git").arg("push").arg("--mirror").arg(&git_url).output().expect("Failed to execute git push");
-    if !push.status.success() { eprint!("{}", String::from_utf8(push.stderr).expect("Could not parse git push")); std::process::exit(1); }
+    Command::new("git").args(["-C", temp_repo.path().to_str().unwrap()]).arg("push")
+        .arg("--mirror")
+        .arg(&git_url)
+        .stdout(Stdio::inherit()).print_command().output()
+        .expect("Failed to execute git push").print_stderr_if_error();
 
     return github_url;
+}
+
+trait OutputExt {
+    fn print_stderr_if_error(self) -> Output;
+}
+
+trait CommandExt {
+    fn print_command(&mut self) -> &mut Command;
+    
+}
+
+impl CommandExt for Command {
+    fn print_command(&mut self) -> &mut Command {
+        println!("{} {}", self.get_program().to_str().unwrap(), self.get_args().map(|s| s.to_str().unwrap()).fold("".to_string(), |cur, nxt| cur + " " + nxt));
+        
+        self
+    }
+}
+
+impl OutputExt for Output {
+    fn print_stderr_if_error(self) -> Output {
+        if !self.status.success() { eprint!("{}", String::from_utf8(self.stderr).expect("Could not parse command")); std::process::exit(1); }
+        self
+    }
 }
 
 fn main() {
     
     let args = Cli::parse();
 
-    println!("Migrating {} to GitHub.", &args.git_url);
+    println!("==== Migrating {} to GitHub. ====", &args.git_url);
     
     
     // Check if auth'ed in github
-    let auth = Command::new("git").args(["auth", "status"])
-        .status()
+
+    let auth = Command::new("gh").args(["auth", "status"]).print_command()
+        .stdout(Stdio::inherit())
+        .output()
         .expect("Failed to execute gh auth status -- is gh installed?");
 
-    if !auth.success() { eprintln!("You need to log in using gh auth login."); std::process::exit(1); }
+    if !auth.status.success() { eprintln!("You need to log in using gh auth login."); std::process::exit(1); }
 
     // Call github thingies
     let url = clone_repository(&args);
