@@ -25,6 +25,10 @@ struct Cli {
     #[arg(short = 'g', long)]
     team: Option<String>,
 
+    /// Description for the GitHub repository
+    #[arg(short, long)]
+    description: Option<String>,
+
     /// Topics to add to the repository
     /// 
     /// eg: -t "npm repository",package,query
@@ -77,21 +81,37 @@ fn clone_repository(params: &Cli) -> String {
         Visibility::Private => {create_repo_command.arg("--private"); },
         Visibility::Public => { create_repo_command.arg("--public"); } ,
     }
-        
-    match &params.team {
-        Some(val) => {create_repo_command.args(["--team", &val]);},
-        None => {},
+    
+    if let Some(team) = &params.team {
+        create_repo_command.args(["--team", team]);
+    }
+    
+    // Add description
+    if let Some(description) = &params.description {
+        create_repo_command.args(["--description", description]);    
     }
     
     let create_repo = create_repo_command.output().expect("Failed to execute gh repo create");
 
     if !create_repo.status.success() { eprint!("{}", String::from_utf8(create_repo.stderr).expect("Could not parse gh repo create")); std::process::exit(1); }
 
+    // Edit new repo
+    // Add topics
+    if let Some(topics) = &params.topics {
+        for topic in topics {
+            let edit_repo_add_topic = Command::new("gh").arg("repo").arg("edit")
+                .arg(&params.github_repo_name)
+                .args(["--add-topic", topic])
+                .output().expect(format!("Failed to execute gh repo edit --add-topic {}",topic).as_str());
+
+            if !edit_repo_add_topic.status.success() { eprint!("{}", String::from_utf8(edit_repo_add_topic.stderr).expect("Could not parse gh repo edit")); std::process::exit(1); }
+        }
+    }
+
     // Push to github
 
     let push = Command::new("git").arg("push").arg("--mirror").arg(&git_url).output().expect("Failed to execute git push");
     if !push.status.success() { eprint!("{}", String::from_utf8(push.stderr).expect("Could not parse git push")); std::process::exit(1); }
-
 
     return github_url;
 }
