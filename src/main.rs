@@ -1,4 +1,4 @@
-use std::{process::{Command, Output, Stdio}, env::args, io::Write};
+use std::{process::{Command, Output, Stdio}, io::Write};
 use tempfile;
 use tempfile::tempdir;
 
