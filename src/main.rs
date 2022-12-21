@@ -1,4 +1,4 @@
-use std::process::{Command, Output, Stdio};
+use std::{process::{Command, Output, Stdio}, env::args, io::Write};
 use tempfile;
 use tempfile::tempdir;
 
@@ -22,8 +22,12 @@ struct Cli {
     github_slug: Option<String>,
 
     /// Team name to assign once the repository is created - example: steplix/frontend
-    #[arg(short = 'g', long)]
-    team: Option<String>,
+    /// 
+    /// Supports adding multiple teams
+    /// 
+    /// Permissions may be {pull|triage|push|maintain|admin} with pull as default
+    #[arg(short = 'p', long, value_name="ORGANIZATION/TEAM:PERMISSION", verbatim_doc_comment)]
+    permission: Option<Vec<String>>,
 
     /// Description for the GitHub repository
     #[arg(short, long)]
@@ -38,7 +42,7 @@ struct Cli {
     /// Flag for public
     #[arg(value_enum)]
     #[arg(default_value_t = Visibility::Private)]
-    #[arg(short = 'p', long)]
+    #[arg(short = 'v', long)]
     visibility: Visibility,
 
 }
@@ -84,10 +88,6 @@ fn clone_repository(params: &Cli) -> String {
         Visibility::Public => { create_repo_command.arg("--public"); } ,
     }
     
-    if let Some(team) = &params.team {
-        create_repo_command.args(["--team", team]);
-    }
-    
     // Add description
     if let Some(description) = &params.description {
         create_repo_command.args(["--description", description]);    
@@ -96,6 +96,36 @@ fn clone_repository(params: &Cli) -> String {
     create_repo_command.print_command().output().expect("Failed to execute gh repo create").print_stderr_if_error();
 
     // Edit new repo
+
+    // Add permissions
+    if let Some(teams) = &params.permission {
+        for team_and_permission in teams {
+            
+            let mut splitter = team_and_permission.split(':');
+            let team = splitter.next().expect("Expected team in iterator");
+            let permission = splitter.next().unwrap_or("pull");
+            
+            let mut child = Command::new("gh").arg("repo-collab").arg("add")
+                .arg(&params.github_repo_name)
+                .arg(&team)
+                .args(["--permission", permission])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .print_command()
+                .spawn()
+                .expect(format!("Failed to execute").as_str());
+
+            {
+                let child_stdin = child.stdin.as_mut().unwrap();
+                child_stdin.write_all(b"y").expect("Could not write to child");
+            }
+
+            child.wait_with_output().expect("Failed to wait for child").print_stderr_if_error();
+            
+        }
+        
+    }
+
     // Add topics
     if let Some(topics) = &params.topics {
         for topic in topics {
@@ -149,7 +179,6 @@ fn main() {
     let args = Cli::parse();
 
     println!("==== Migrating {} to GitHub. ====", &args.git_url);
-    
     
     // Check if auth'ed in github
 
